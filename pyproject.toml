@@ -1,0 +1,20 @@
+[project]
+name = "avg-pricing-utility"
+version = "0.1.0"
+description = "Shared pricing utility for AVG projects"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "web3>=6.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["avg_pricing_utility*"]
+
+[tool.setuptools.package-data]
+avg_pricing_utility = ["abi/*.json"]
