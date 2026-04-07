@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from avg_pricing_utility.client.coingecko_client import CoinGeckoClient
 from avg_pricing_utility.client.morpho_client import MorphoClient
 from avg_pricing_utility.client.pendle_client import PendleClient
-from avg_pricing_utility.client.pareto_client import ParetoClient
+from avg_pricing_utility.client.onyx_client import OnyxClient
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ SOURCE_NAMES = {
     2: "Morpho V1",
     3: "Pendle",
     4: "Morpho V2",
-    6: "Pareto",
+    5: "Onyx",
 }
 
 DEFAULT_RPC_URLS = {
@@ -48,7 +48,7 @@ class PricingService:
         2 = Morpho V1
         3 = Pendle
         4 = Morpho V2
-        6 = Pareto
+        5 = Onyx (on-chain sharePrice)
     """
 
     def __init__(self, rpc_urls: Dict[int, str] = None):
@@ -60,7 +60,7 @@ class PricingService:
         self.coingecko = CoinGeckoClient()
         self.morpho = MorphoClient()
         self.pendle = PendleClient()
-        self.pareto = ParetoClient()
+        self.onyx = OnyxClient()
 
     # ---- Current prices ----
 
@@ -90,10 +90,10 @@ class PricingService:
                 price = self.pendle.get_current_price(token_address, chain_id)
             elif price_source == 4:
                 price = self.morpho.get_current_price_v2(token_address, chain_id)
-            elif price_source == 6:
+            elif price_source == 5:
                 rpc_url = self.rpc_urls.get(chain_id)
                 if rpc_url:
-                    price = self.pareto.get_current_price(token_address, chain_id, rpc_url)
+                    price = self.onyx.get_current_price(token_address, rpc_url)
             else:
                 logger.warning(f"Unknown price_source {price_source} for {symbol}")
         except Exception as e:
@@ -223,6 +223,34 @@ class PricingService:
         else:
             logger.warning(f"No historical price support for price_source {price_source}")
             return []
+
+    def get_price_by_block(
+        self,
+        price_source: int,
+        token_address: str,
+        chain_id: int,
+        block_number: int,
+    ) -> Optional[float]:
+        """Fetch price at a specific block number (on-chain sources only).
+
+        Args:
+            price_source: Source ID (only 5=Onyx supported).
+            token_address: Token/vault address.
+            chain_id: Chain ID.
+            block_number: Block number to query at.
+
+        Returns:
+            Price as float, or None.
+        """
+        if price_source == 5:
+            rpc_url = self.rpc_urls.get(chain_id)
+            if not rpc_url:
+                logger.warning(f"No RPC URL for chain {chain_id}")
+                return None
+            return self.onyx.get_price_at_block(token_address, rpc_url, block_number)
+        else:
+            logger.warning(f"get_price_by_block not supported for price_source {price_source}")
+            return None
 
     def clear_cache(self):
         """Clear the in-memory price cache."""
