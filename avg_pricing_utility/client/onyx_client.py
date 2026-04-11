@@ -29,22 +29,13 @@ class OnyxClient:
             self._decimals_cache[addr] = contract.functions.decimals().call()
         return self._decimals_cache[addr]
 
-    def get_current_price(self, token_address: str, rpc_url: str) -> Optional[float]:
-        """Fetch current share price."""
-        try:
-            w3 = Web3(Web3.HTTPProvider(rpc_url))
-            contract = w3.eth.contract(
-                address=Web3.to_checksum_address(token_address), abi=self._abi
-            )
-            price_raw, _ = contract.functions.sharePrice().call()
-            decimals = self._get_decimals(contract)
-            return price_raw / (10 ** decimals)
-        except Exception as e:
-            logger.error(f"Failed to fetch Onyx share price: {e}")
-            return None
+    def get_price_at_block(self, token_address: str, rpc_url: str, block_number: int = None) -> Optional[tuple]:
+        """Fetch share price, optionally at a specific block.
 
-    def get_price_at_block(self, token_address: str, rpc_url: str, block_number: int) -> Optional[tuple]:
-        """Fetch share price at a specific block.
+        Args:
+            token_address: Onyx shares contract address.
+            rpc_url: RPC endpoint URL.
+            block_number: Block number to query at. None for latest.
 
         Returns:
             (price_float, on_chain_timestamp_unix) or None on error.
@@ -54,11 +45,14 @@ class OnyxClient:
             contract = w3.eth.contract(
                 address=Web3.to_checksum_address(token_address), abi=self._abi
             )
-            price_raw, price_ts = contract.functions.sharePrice().call(
-                block_identifier=block_number
-            )
+            if block_number is not None:
+                price_raw, price_ts = contract.functions.sharePrice().call(
+                    block_identifier=block_number
+                )
+            else:
+                price_raw, price_ts = contract.functions.sharePrice().call()
             decimals = self._get_decimals(contract)
             return price_raw / (10 ** decimals), int(price_ts)
         except Exception as e:
-            logger.error(f"Failed to fetch Onyx share price at block {block_number}: {e}")
+            logger.error(f"Failed to fetch Onyx share price{f' at block {block_number}' if block_number else ''}: {e}")
             return None

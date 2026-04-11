@@ -93,7 +93,9 @@ class PricingService:
             elif price_source == 5:
                 rpc_url = self.rpc_urls.get(chain_id)
                 if rpc_url:
-                    price = self.onyx.get_current_price(token_address, rpc_url)
+                    result = self.onyx.get_price_at_block(token_address, rpc_url)
+                    if result is not None:
+                        price = result[0]
             else:
                 logger.warning(f"Unknown price_source {price_source} for {symbol}")
         except Exception as e:
