@@ -43,18 +43,22 @@ class OnyxClient:
             logger.error(f"Failed to fetch Onyx share price: {e}")
             return None
 
-    def get_price_at_block(self, token_address: str, rpc_url: str, block_number: int) -> Optional[float]:
-        """Fetch share price at a specific block."""
+    def get_price_at_block(self, token_address: str, rpc_url: str, block_number: int) -> Optional[tuple]:
+        """Fetch share price at a specific block.
+
+        Returns:
+            (price_float, on_chain_timestamp_unix) or None on error.
+        """
         try:
             w3 = Web3(Web3.HTTPProvider(rpc_url))
             contract = w3.eth.contract(
                 address=Web3.to_checksum_address(token_address), abi=self._abi
             )
-            price_raw, _ = contract.functions.sharePrice().call(
+            price_raw, price_ts = contract.functions.sharePrice().call(
                 block_identifier=block_number
             )
             decimals = self._get_decimals(contract)
-            return price_raw / (10 ** decimals)
+            return price_raw / (10 ** decimals), int(price_ts)
         except Exception as e:
             logger.error(f"Failed to fetch Onyx share price at block {block_number}: {e}")
             return None

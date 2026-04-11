@@ -230,7 +230,7 @@ class PricingService:
         token_address: str,
         chain_id: int,
         block_number: int,
-    ) -> Optional[float]:
+    ) -> Optional[tuple]:
         """Fetch price at a specific block number (on-chain sources only).
 
         Args:
@@ -240,7 +240,7 @@ class PricingService:
             block_number: Block number to query at.
 
         Returns:
-            Price as float, or None.
+            (price_float, on_chain_timestamp_unix) or None.
         """
         if price_source == 5:
             rpc_url = self.rpc_urls.get(chain_id)
