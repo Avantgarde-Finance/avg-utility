@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from avg_pricing_utility.client.coingecko_client import CoinGeckoClient
 from avg_pricing_utility.client.morpho_client import MorphoClient
+from avg_pricing_utility.client.morpho_onchain_client import MorphoOnchainClient
 from avg_pricing_utility.client.pendle_client import PendleClient
 from avg_pricing_utility.client.onyx_client import OnyxClient
 
@@ -59,6 +60,7 @@ class PricingService:
 
         self.coingecko = CoinGeckoClient()
         self.morpho = MorphoClient()
+        self.morpho_onchain = MorphoOnchainClient(coingecko=self.coingecko)
         self.pendle = PendleClient()
         self.onyx = OnyxClient()
 
@@ -236,7 +238,11 @@ class PricingService:
         """Fetch price at a specific block number (on-chain sources only).
 
         Args:
-            price_source: Source ID (only 5=Onyx supported).
+            price_source: Source ID. Supported: 2=Morpho V1, 4=Morpho V2,
+                5=Onyx — all read on-chain (ERC-4626 / sharePrice) instead of
+                via an API. Morpho sources resolve the underlying -> USD half
+                by treating known stablecoins as $1 and pricing everything else
+                from CoinGecko at the block timestamp.
             token_address: Token/vault address.
             chain_id: Chain ID.
             block_number: Block number to query at.
@@ -244,12 +250,20 @@ class PricingService:
         Returns:
             (price_float, on_chain_timestamp_unix) or None.
         """
+        rpc_url = self.rpc_urls.get(chain_id)
+        if not rpc_url:
+            logger.warning(f"No RPC URL for chain {chain_id}")
+            return None
+
         if price_source == 5:
-            rpc_url = self.rpc_urls.get(chain_id)
-            if not rpc_url:
-                logger.warning(f"No RPC URL for chain {chain_id}")
-                return None
             return self.onyx.get_price_at_block(token_address, rpc_url, block_number)
+        elif price_source in (2, 4):
+            return self.morpho_onchain.get_share_price_usd_at_block(
+                vault_address=token_address,
+                rpc_url=rpc_url,
+                chain_id=chain_id,
+                block_number=block_number,
+            )
         else:
             logger.warning(f"get_price_by_block not supported for price_source {price_source}")
             return None

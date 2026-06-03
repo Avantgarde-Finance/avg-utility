@@ -62,6 +62,36 @@ class CoinGeckoClient:
             return data
         raise Exception(f"API error: {data.get('error', 'Unknown error')}")
 
+    def get_market_chart_contract_range(self, platform: str, contract_address: str,
+                                        from_timestamp: int, to_timestamp: int,
+                                        vs_currency: str = "usd") -> List[List]:
+        """Get historical prices for a token by contract address within a time range.
+
+        Args:
+            platform: CoinGecko asset platform slug (e.g. 'ethereum', 'arbitrum-one', 'base').
+            contract_address: Token contract address.
+            from_timestamp: Start Unix timestamp.
+            to_timestamp: End Unix timestamp.
+            vs_currency: Quote currency (default: 'usd').
+
+        Returns:
+            [[timestamp_ms, price], ...]
+        """
+        url = f"{self.BASE_URL}/coins/{platform}/contract/{contract_address}/market_chart/range"
+        params = {
+            "vs_currency": vs_currency,
+            "from": from_timestamp,
+            "to": to_timestamp,
+        }
+
+        response = requests.get(url, headers=self.headers, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        if isinstance(data, dict) and "prices" in data:
+            return data["prices"]
+        raise Exception(f"API error: {data.get('error', 'Unknown error') if isinstance(data, dict) else data}")
+
     def get_price_ohlc_range(self, coin: str, from_timestamp: int, to_timestamp: int,
                              vs_currency: str = "usd", interval: str = "daily") -> List[List]:
         """Get OHLC price data within a specific time range.
