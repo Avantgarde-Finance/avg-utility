@@ -11,7 +11,7 @@ from typing import Optional
 
 from web3 import Web3
 
-from avg_pricing_utility.client.coingecko_client import CoinGeckoClient
+from avg_utility.client.coingecko_client import CoinGeckoClient
 
 logger = logging.getLogger(__name__)
 

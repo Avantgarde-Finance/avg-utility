@@ -5,11 +5,12 @@ from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from avg_pricing_utility.client.coingecko_client import CoinGeckoClient
-from avg_pricing_utility.client.morpho_client import MorphoClient
-from avg_pricing_utility.client.morpho_onchain_client import MorphoOnchainClient
-from avg_pricing_utility.client.pendle_client import PendleClient
-from avg_pricing_utility.client.onyx_client import OnyxClient
+from avg_utility.client.coingecko_client import CoinGeckoClient
+from avg_utility.client.morpho_client import MorphoClient
+from avg_utility.client.morpho_onchain_client import MorphoOnchainClient
+from avg_utility.client.pendle_client import PendleClient
+from avg_utility.client.onyx_client import OnyxClient
+from avg_utility.enum.sources import PriceSource, label_for
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -25,13 +26,6 @@ def _check_env():
         )
     return api_key
 
-SOURCE_NAMES = {
-    1: "CoinGecko",
-    2: "Morpho V1",
-    3: "Pendle",
-    4: "Morpho V2",
-    5: "Onyx",
-}
 
 DEFAULT_RPC_URLS = {
     1: "https://ethereum-rpc.publicnode.com",
@@ -80,19 +74,19 @@ class PricingService:
 
         price = None
         try:
-            if price_source == 1:
+            if price_source == PriceSource.COINGECKO:
                 if not coingecko_id:
                     return None
                 prices = self.coingecko.get_simple_price(coingecko_id)
                 if coingecko_id in prices:
                     price = prices[coingecko_id]
-            elif price_source == 2:
+            elif price_source == PriceSource.MORPHO_V1:
                 price = self.morpho.get_current_price_v1(token_address, chain_id)
-            elif price_source == 3:
+            elif price_source == PriceSource.PENDLE:
                 price = self.pendle.get_current_price(token_address, chain_id)
-            elif price_source == 4:
+            elif price_source == PriceSource.MORPHO_V2:
                 price = self.morpho.get_current_price_v2(token_address, chain_id)
-            elif price_source == 5:
+            elif price_source == PriceSource.ONYX:
                 rpc_url = self.rpc_urls.get(chain_id)
                 if rpc_url:
                     result = self.onyx.get_price_at_block(token_address, rpc_url)
@@ -101,7 +95,7 @@ class PricingService:
             else:
                 logger.warning(f"Unknown price_source {price_source} for {symbol}")
         except Exception as e:
-            logger.warning(f"Failed to fetch price for {symbol} from {SOURCE_NAMES.get(price_source, price_source)}: {e}")
+            logger.warning(f"Failed to fetch price for {symbol} from {label_for(PriceSource, price_source)}: {e}")
 
         if price is not None:
             self.price_cache[symbol] = price
@@ -121,7 +115,7 @@ class PricingService:
         other_tokens = []
 
         for t in tokens:
-            if t.get("price_source") == 1:
+            if t.get("price_source") == PriceSource.COINGECKO:
                 cg_tokens.append(t)
             else:
                 other_tokens.append(t)
@@ -181,7 +175,7 @@ class PricingService:
         Returns:
             List of (timestamp_ms_or_s, close_price) tuples.
         """
-        if price_source == 1:
+        if price_source == PriceSource.COINGECKO:
             if not coingecko_id:
                 return []
             cg_interval = self._CG_INTERVAL.get(interval, "daily")
@@ -191,7 +185,7 @@ class PricingService:
             )
             return [(entry[0], entry[4]) for entry in ohlc]  # (timestamp_ms, close)
 
-        elif price_source == 2:
+        elif price_source == PriceSource.MORPHO_V1:
             morpho_interval = self._MORPHO_INTERVAL.get(interval, "DAY")
             vault = self.morpho.get_price_share_price_usd(
                 token_address, chain_id, start_timestamp, end_timestamp,
@@ -200,7 +194,7 @@ class PricingService:
             entries = vault.get("historicalState", {}).get("sharePriceUsd", [])
             return [(e["x"], float(e["y"])) for e in entries]
 
-        elif price_source == 3:
+        elif price_source == PriceSource.PENDLE:
             from datetime import datetime
             pendle_interval = self._PENDLE_INTERVAL.get(interval, "day")
             ts_start = datetime.fromtimestamp(start_timestamp).strftime("%Y-%m-%d")
@@ -215,7 +209,7 @@ class PricingService:
                 if start_timestamp <= e["time"] <= end_timestamp
             ]
 
-        elif price_source == 4:
+        elif price_source == PriceSource.MORPHO_V2:
             morpho_interval = self._MORPHO_INTERVAL.get(interval, "DAY")
             vault = self.morpho.get_v2_share_price(
                 token_address, chain_id, start_timestamp, end_timestamp,
@@ -255,9 +249,9 @@ class PricingService:
             logger.warning(f"No RPC URL for chain {chain_id}")
             return None
 
-        if price_source == 5:
+        if price_source == PriceSource.ONYX:
             return self.onyx.get_price_at_block(token_address, rpc_url, block_number)
-        elif price_source in (2, 4):
+        elif price_source in (PriceSource.MORPHO_V1, PriceSource.MORPHO_V2):
             return self.morpho_onchain.get_share_price_usd_at_block(
                 vault_address=token_address,
                 rpc_url=rpc_url,

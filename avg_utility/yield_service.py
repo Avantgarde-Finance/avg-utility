@@ -3,18 +3,12 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from avg_pricing_utility.client.defillama_client import DefiLlamaClient
-from avg_pricing_utility.client.morpho_client import MorphoClient
-from avg_pricing_utility.client.pendle_client import PendleClient
+from avg_utility.client.defillama_client import DefiLlamaClient
+from avg_utility.client.morpho_client import MorphoClient
+from avg_utility.client.pendle_client import PendleClient
+from avg_utility.enum.sources import YieldSource, label_for
 
 logger = logging.getLogger(__name__)
-
-SOURCE_NAMES = {
-    1: "DefiLlama",
-    2: "Morpho V1",
-    3: "Pendle",
-    4: "Morpho V2",
-}
 
 
 class YieldService:
@@ -81,19 +75,19 @@ class YieldService:
         records = []
 
         try:
-            if yield_source == 1:
+            if yield_source == YieldSource.DEFILLAMA:
                 records = self._fetch_defillama(dlid, start_timestamp, end_timestamp)
-            elif yield_source == 2:
+            elif yield_source == YieldSource.MORPHO_V1:
                 records = self._fetch_morpho_v1_apy(token_address, chain_id, start_timestamp, end_timestamp)
-            elif yield_source == 3:
+            elif yield_source == YieldSource.PENDLE:
                 records = self._fetch_pendle_apy(token_address, chain_id, start_timestamp, end_timestamp)
-            elif yield_source == 4:
+            elif yield_source == YieldSource.MORPHO_V2:
                 records = self._fetch_morpho_v2_apy(token_address, chain_id, start_timestamp, end_timestamp)
             else:
                 logger.warning(f"Unknown yield_source {yield_source}")
                 return []
         except Exception as e:
-            logger.warning(f"Failed to fetch yield from {SOURCE_NAMES.get(yield_source, yield_source)}: {e}")
+            logger.warning(f"Failed to fetch yield from {label_for(YieldSource, yield_source)}: {e}")
             return []
 
         # Forward-fill negative APYs

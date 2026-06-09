@@ -1,15 +1,19 @@
 # Avantgarde Utility
 
-Shared pricing and yield utility for AVG projects.
+Shared pricing, yield, and on-chain position utilities for AVG projects.
+
+> **v0.2.0 — breaking:** the import package was renamed `avg_pricing_utility` → **`avg_utility`**
+> (distribution `avg-pricing-utility` → **`avg-utility`**). Update imports and pin to a tag, e.g.
+> `avg-utility @ git+https://github.com/Avantgarde-Finance/avg-utility.git@v0.2.0`.
 
 ## Installation
 
 ```bash
-# uv
-uv add git+https://github.com/Avantgarde-Finance/avg-utility.git
+# uv (pin to a tag for reproducible builds)
+uv add "git+https://github.com/Avantgarde-Finance/avg-utility.git@v0.2.0"
 
 # pip
-pip install git+https://github.com/Avantgarde-Finance/avg-utility.git
+pip install "git+https://github.com/Avantgarde-Finance/avg-utility.git@v0.2.0"
 ```
 
 ### Upgrading
@@ -32,10 +36,38 @@ Set `COINGECKO_API_KEY` in your `.env` file or environment variables. The servic
 
 ---
 
+## PositionService
+
+On-chain readers for positions that aren't a plain ERC20 `balanceOf`. Mirrors `PricingService` /
+`YieldService`: a `position_source` id dispatches to a registered reader. Clients are lazy (no
+RPC/subgraph calls until you request a read).
+
+```python
+from avg_utility import PositionService
+
+svc = PositionService()  # optional: rpc_urls={42161: "..."}, thegraph_api_key="..."
+
+# The Graph (Horizon) delegation on Arbitrum One — wallet + delegated + thawing, in GRT
+pos = svc.get_grt_position("0x43298f4aFfF16671C577Cc5944f5689B21CF9fAf", block=None)
+pos["total"]                  # wallet + delegated + thawing (GRT wei)
+pos["delegated_plus_thawing"] # the non-tokenized position portion
+pos["per_pool"]               # [{sp, delegated, thawing}, ...]
+
+# or via the source-id dispatch (position_source 1 = Graph Horizon Delegation)
+svc.get_position(1, wallet, block=block)
+```
+
+| position_source | Source | Reader |
+|---|---|---|
+| 1 | Graph Horizon Delegation (Arbitrum One) | `HorizonClient` reads + `TheGraphClient` SP discovery |
+
+Needs an Arbitrum RPC (`ARBITRUM_RPC_URL` / `ALCHEMY_KEY`) and `THEGRAPH_API_KEY` (for SP discovery,
+unless `service_providers=[...]` is supplied).
+
 ## PricingService
 
 ```python
-from avg_pricing_utility import PricingService
+from avg_utility import PricingService
 
 service = PricingService()
 ```
@@ -116,7 +148,7 @@ prices = service.get_historical_prices(
 ## YieldService
 
 ```python
-from avg_pricing_utility import YieldService
+from avg_utility import YieldService
 
 service = YieldService()
 ```
