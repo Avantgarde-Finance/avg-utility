@@ -88,7 +88,11 @@ class HorizonClient:
         pool = self.horizon.functions.getDelegationPool(sp, verifier).call(**kw)
         pool_tokens, pool_shares, pool_tokens_thawing, pool_shares_thawing, pool_thawing_nonce = pool
 
-        delegated = (user_shares * pool_tokens // pool_shares) if (pool_shares and user_shares) else 0
+        # `pool_tokens` from getDelegationPool INCLUDES the thawing reserve, while `pool_shares`
+        # excludes thawing shares. Using the raw ratio overstates the per-share GRT value for pools
+        # with a large thawing pool. Net out the thawing tokens to get the active-delegation rate.
+        active_tokens = pool_tokens - pool_tokens_thawing
+        delegated = (user_shares * active_tokens // pool_shares) if (pool_shares and user_shares) else 0
         return {
             "sp": sp,
             "user_shares": user_shares,
