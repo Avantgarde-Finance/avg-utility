@@ -35,10 +35,11 @@ class YieldSource(IntEnum):
 
 class PositionSource(IntEnum):
     GRAPH_HORIZON_DELEGATION = 1
+    MORPHO_LOOP = 2
 
     @property
     def label(self) -> str:
-        return {1: "Graph Horizon Delegation"}[self.value]
+        return {1: "Graph Horizon Delegation", 2: "Morpho Loop"}[self.value]
 
 
 def label_for(enum_cls, value) -> str:

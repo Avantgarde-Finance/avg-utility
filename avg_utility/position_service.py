@@ -5,6 +5,7 @@ positions that are NOT a plain ERC20 `balanceOf` (e.g. native Graph delegation, 
 
 position_source mapping (see avg_utility.enum.sources.PositionSource):
     1 = Graph Horizon Delegation  (Arbitrum One; wallet + delegated + thawing, in GRT)
+    2 = Morpho Loop               (leveraged Morpho Blue market; net-equity USD)
 """
 import logging
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from avg_utility.client.horizon_client import HorizonClient
+from avg_utility.client.morpho_onchain_client import MorphoOnchainClient
 from avg_utility.client.thegraph_client import TheGraphClient
 from avg_utility.enum.sources import PositionSource, label_for
 
@@ -35,6 +37,7 @@ class PositionService:
         self._thegraph_api_key = thegraph_api_key
         self._horizon: Optional[HorizonClient] = None
         self._thegraph: Optional[TheGraphClient] = None
+        self._morpho_loop: Optional[MorphoOnchainClient] = None
 
     # ---- lazy clients ----
 
@@ -48,12 +51,19 @@ class PositionService:
             self._thegraph = TheGraphClient(api_key=self._thegraph_api_key)
         return self._thegraph
 
+    def _morpho_loop_client(self) -> MorphoOnchainClient:
+        if self._morpho_loop is None:
+            self._morpho_loop = MorphoOnchainClient()
+        return self._morpho_loop
+
     # ---- dispatch ----
 
     def get_position(self, position_source: int, wallet: str, block: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         """Dispatch to the reader for `position_source`. Raises on unknown source."""
         if position_source == PositionSource.GRAPH_HORIZON_DELEGATION:
             return self.get_grt_position(wallet, block=block, **kwargs)
+        if position_source == PositionSource.MORPHO_LOOP:
+            return self.get_morpho_loop_position(wallet, block=block, **kwargs)
         raise ValueError(f"Unknown position_source {position_source} ({label_for(PositionSource, position_source)})")
 
     # ---- readers ----
@@ -107,3 +117,41 @@ class PositionService:
             "per_pool": per_pool,
             "service_providers": sps,
         }
+
+    def get_morpho_loop_position(
+        self,
+        wallet: str,
+        block: Optional[int] = None,
+        market_id: Optional[str] = None,
+        chain_id: int = 1,
+        morpho_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Net equity (USD) of a Morpho Blue loop position for a wallet.
+
+        A loop is composite (collateral minus debt) with no single underlying price, so — unlike
+        `get_grt_position`, which returns native quantities to be priced downstream — this returns a
+        marked `usd_value` directly (matching the positions data model's "composite → usd_value
+        direct, NULL quantity" rule).
+
+        Args:
+            wallet: position owner.
+            block: block to pin all reads to (None = latest).
+            market_id: Morpho Blue market id (bytes32 hex, ``0x…``). Required.
+            chain_id: chain the market lives on (used to pick the RPC + price source).
+            morpho_address: Morpho Blue singleton; defaults to the canonical CREATE2 address.
+
+        Returns the full leg breakdown from MorphoOnchainClient.get_loop_position, incl. `usd_value`.
+        """
+        if not market_id:
+            raise ValueError("get_morpho_loop_position requires a market_id")
+        rpc_url = self.rpc_urls.get(chain_id)
+        if not rpc_url:
+            raise ValueError(f"No RPC url configured for chain {chain_id}")
+        return self._morpho_loop_client().get_loop_position(
+            wallet=wallet,
+            market_id=market_id,
+            rpc_url=rpc_url,
+            chain_id=chain_id,
+            morpho_address=morpho_address,
+            block=block,
+        )

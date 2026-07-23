@@ -1,12 +1,19 @@
-"""On-chain Morpho (ERC-4626) share-price client.
+"""On-chain Morpho reads: ERC-4626 vault share prices and Morpho Blue loop positions.
 
-Reads a Morpho V1/V2 vault's share price directly from the chain instead of the
-Morpho GraphQL API. ERC-4626 only exposes shares -> underlying assets
-(`convertToAssets`); the underlying -> USD half is resolved here by either
-treating known stablecoins as $1 or fetching the underlying's USD price from
-CoinGecko (by contract address) at the block timestamp.
+Two readers, both hitting the chain instead of the Morpho GraphQL API:
+
+* `get_share_price_usd_at_block` — a Morpho V1/V2 vault's share price. ERC-4626 only exposes shares
+  -> underlying assets (`convertToAssets`); the underlying -> USD half is resolved here by treating
+  known stablecoins as $1 or fetching the underlying's USD price from CoinGecko (by contract) at the
+  block timestamp.
+* `get_loop_position` — a leveraged position on a single Morpho Blue market (supply collateral,
+  borrow the loan asset, re-supply to lever up). It mints no share token to `balanceOf` and its value
+  is composite (collateral minus debt), so this reads both legs from the Morpho Blue singleton and
+  marks net equity to USD purely on-chain (stablecoin leg = $1, other leg via the market oracle).
 """
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 from web3 import Web3
@@ -14,6 +21,8 @@ from web3 import Web3
 from avg_utility.client.coingecko_client import CoinGeckoClient
 
 logger = logging.getLogger(__name__)
+
+_ABI_DIR = Path(__file__).resolve().parent.parent / "abi"
 
 # Minimal ERC-4626 + ERC20 ABI — only the reads we need.
 _ERC4626_ABI = [
@@ -53,6 +62,38 @@ _STABLECOINS = {
         "0x50c5725949a6f0c72e6c4a641f24049a917db0cb",  # DAI
     },
 }
+
+# ----- Morpho Blue loop-position constants -----
+
+# Canonical Morpho Blue singleton — same CREATE2 address on Ethereum, Base, Optimism, Arbitrum.
+# Chains that deployed it elsewhere must pass `morpho_address` explicitly.
+DEFAULT_MORPHO_BLUE = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
+
+ORACLE_PRICE_SCALE = 10 ** 36
+VIRTUAL_SHARES = 10 ** 6
+VIRTUAL_ASSETS = 1
+
+# Morpho Blue + IOracle ABIs (reads only; ERC20 `decimals` reuses _ERC4626_ABI).
+_MORPHO_BLUE_ABI = json.loads((_ABI_DIR / "MorphoBlue.json").read_text())
+_ORACLE_ABI = json.loads((_ABI_DIR / "MorphoOracle.json").read_text())
+
+
+def _mul_div_down(a: int, b: int, c: int) -> int:
+    return (a * b) // c
+
+
+def _mul_div_up(a: int, b: int, c: int) -> int:
+    return (a * b + (c - 1)) // c
+
+
+def _to_assets_down(shares: int, total_assets: int, total_shares: int) -> int:
+    """SharesMathLib.toAssetsDown — shares → assets, rounding down (supply side)."""
+    return _mul_div_down(shares, total_assets + VIRTUAL_ASSETS, total_shares + VIRTUAL_SHARES)
+
+
+def _to_assets_up(shares: int, total_assets: int, total_shares: int) -> int:
+    """SharesMathLib.toAssetsUp — shares → assets, rounding up (debt side)."""
+    return _mul_div_up(shares, total_assets + VIRTUAL_ASSETS, total_shares + VIRTUAL_SHARES)
 
 
 class MorphoOnchainClient:
@@ -169,3 +210,136 @@ class MorphoOnchainClient:
         target_ms = timestamp_unix * 1000
         closest = min(prices, key=lambda p: abs(p[0] - target_ms))
         return float(closest[1])
+
+    # ----- Morpho Blue loop positions -----
+
+    def get_loop_position(
+        self,
+        wallet: str,
+        market_id: str,
+        rpc_url: str,
+        chain_id: int,
+        morpho_address: Optional[str] = None,
+        block: Optional[int] = None,
+    ) -> dict:
+        """Net equity of a wallet's loop on one Morpho Blue market, marked to USD on-chain.
+
+        Args:
+            wallet: position owner (the product's defi_wallet).
+            market_id: Morpho Blue market id (bytes32 hex string, ``0x…``).
+            rpc_url: RPC endpoint for `chain_id` (archive node for historical blocks).
+            chain_id: chain the market lives on.
+            morpho_address: Morpho Blue singleton; defaults to the canonical CREATE2 address.
+            block: block to pin all reads to (None = latest).
+
+        Returns (raw amounts are native token wei; ``*_loan`` are loan-token units):
+            {
+                collateral, supply_assets, borrow_assets,           # native raw ints
+                collateral_value_loan_raw, net_equity_loan_raw,     # loan-token raw ints
+                net_equity_loan, loan_token_usd, usd_value,          # floats
+                price_method,                                        # how loan_token_usd was resolved
+                loan_token, collateral_token, loan_decimals, collateral_decimals,
+                oracle_price, market_id,
+            }
+        """
+        w3 = self._get_web3(rpc_url)
+        block_id = block if block is not None else "latest"
+        morpho = w3.eth.contract(
+            address=Web3.to_checksum_address(morpho_address or DEFAULT_MORPHO_BLUE),
+            abi=_MORPHO_BLUE_ABI,
+        )
+        mid = market_id if isinstance(market_id, (bytes, bytearray)) else Web3.to_bytes(hexstr=market_id)
+        user = Web3.to_checksum_address(wallet)
+
+        loan_token, collateral_token, oracle_addr, _irm, _lltv = \
+            morpho.functions.idToMarketParams(mid).call(block_identifier=block_id)
+        supply_shares, borrow_shares, collateral = \
+            morpho.functions.position(mid, user).call(block_identifier=block_id)
+        (total_supply_assets, total_supply_shares,
+         total_borrow_assets, total_borrow_shares, _last_update, _fee) = \
+            morpho.functions.market(mid).call(block_identifier=block_id)
+
+        supply_assets = _to_assets_down(supply_shares, total_supply_assets, total_supply_shares) \
+            if supply_shares else 0
+        borrow_assets = _to_assets_up(borrow_shares, total_borrow_assets, total_borrow_shares) \
+            if borrow_shares else 0
+
+        # Read the market oracle unconditionally — it prices the collateral leg AND, when the
+        # collateral is a stablecoin, anchors the loan token to USD (see _resolve_loan_usd).
+        oracle = w3.eth.contract(address=Web3.to_checksum_address(oracle_addr), abi=_ORACLE_ABI)
+        oracle_price = oracle.functions.price().call(block_identifier=block_id)
+        collateral_value_loan_raw = (collateral * oracle_price) // ORACLE_PRICE_SCALE
+
+        net_equity_loan_raw = supply_assets + collateral_value_loan_raw - borrow_assets
+
+        loan_decimals = self._erc20_decimals(w3, loan_token)
+        collateral_decimals = self._erc20_decimals(w3, collateral_token)
+        net_equity_loan = net_equity_loan_raw / (10 ** loan_decimals)
+
+        loan_token_usd, price_method = self._resolve_loan_usd(
+            loan_token, collateral_token, oracle_price, loan_decimals, collateral_decimals, chain_id,
+        )
+        usd_value = net_equity_loan * loan_token_usd if loan_token_usd is not None else None
+
+        logger.info(
+            "Morpho loop %s market %s: net equity %.6f loan-token x $%s (%s) = %s "
+            "(collateral=%s, borrow_assets=%s)",
+            wallet, market_id, net_equity_loan,
+            f"{loan_token_usd:,.6f}" if loan_token_usd is not None else "N/A",
+            price_method,
+            f"${usd_value:,.2f}" if usd_value is not None else "N/A",
+            collateral, borrow_assets,
+        )
+
+        return {
+            "collateral": collateral,
+            "supply_assets": supply_assets,
+            "borrow_assets": borrow_assets,
+            "collateral_value_loan_raw": collateral_value_loan_raw,
+            "net_equity_loan_raw": net_equity_loan_raw,
+            "net_equity_loan": net_equity_loan,
+            "loan_token_usd": loan_token_usd,
+            "price_method": price_method,
+            "usd_value": usd_value,
+            "loan_token": loan_token,
+            "collateral_token": collateral_token,
+            "loan_decimals": loan_decimals,
+            "collateral_decimals": collateral_decimals,
+            "oracle_price": oracle_price,
+            "market_id": market_id,
+        }
+
+    def _resolve_loan_usd(
+        self,
+        loan_token: str,
+        collateral_token: str,
+        oracle_price: int,
+        loan_decimals: int,
+        collateral_decimals: int,
+        chain_id: int,
+    ):
+        """USD price of the loan token, anchored on-chain to the market's stablecoin leg.
+
+          1. loan token is a USD stablecoin   → $1
+          2. collateral is a USD stablecoin    → invert the market oracle (fully on-chain)
+          3. neither leg is a stablecoin       → unpriced (None); can't anchor to USD on-chain
+
+        Returns ``(price, method)``. Case 2: the oracle (collateral→loan, 1e36-scaled) pins the
+        loan's USD price — 1 collateral = $1 = price·10^(collDec−loanDec)/1e36 loan tokens, so
+        1 loan token = 1e36·10^(loanDec−collDec)/price USD.
+        """
+        stables = _STABLECOINS.get(chain_id, set())
+
+        if loan_token.lower() in stables:
+            return 1.0, "stablecoin"
+
+        if collateral_token.lower() in stables and oracle_price:
+            loan_usd = (ORACLE_PRICE_SCALE / oracle_price) * (10 ** loan_decimals) / (10 ** collateral_decimals)
+            return loan_usd, "oracle_inverse"
+
+        logger.warning(
+            "Morpho loop market has no stablecoin leg (loan %s / collateral %s on chain %s); "
+            "cannot anchor USD on-chain — returning unpriced",
+            loan_token, collateral_token, chain_id,
+        )
+        return None, "unpriced"
