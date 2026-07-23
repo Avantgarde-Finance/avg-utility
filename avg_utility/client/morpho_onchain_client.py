@@ -7,9 +7,10 @@ Two readers, both hitting the chain instead of the Morpho GraphQL API:
   known stablecoins as $1 or fetching the underlying's USD price from CoinGecko (by contract) at the
   block timestamp.
 * `get_loop_position` — a leveraged position on a single Morpho Blue market (supply collateral,
-  borrow the loan asset, re-supply to lever up). It mints no share token to `balanceOf` and its value
-  is composite (collateral minus debt), so this reads both legs from the Morpho Blue singleton and
-  marks net equity to USD purely on-chain (stablecoin leg = $1, other leg via the market oracle).
+  borrow the borrow token, re-supply to lever up). It mints no share token to `balanceOf` and its
+  value is composite (collateral minus debt), so this reads both legs from the Morpho Blue singleton
+  and marks net equity to USD purely on-chain (stablecoin leg = $1, other leg via the market oracle).
+  (Morpho's `MarketParams` names the borrowed asset ``loanToken``; we call it the borrow token.)
 """
 import json
 import logging
@@ -224,6 +225,9 @@ class MorphoOnchainClient:
     ) -> dict:
         """Net equity of a wallet's loop on one Morpho Blue market, marked to USD on-chain.
 
+        Terminology: Morpho's `MarketParams` calls the debt asset ``loanToken``; because in a loop
+        you *borrow* it, this reader names it the **borrow token** throughout to avoid confusion.
+
         Args:
             wallet: position owner (the product's defi_wallet).
             market_id: Morpho Blue market id (bytes32 hex string, ``0x…``).
@@ -232,13 +236,14 @@ class MorphoOnchainClient:
             morpho_address: Morpho Blue singleton; defaults to the canonical CREATE2 address.
             block: block to pin all reads to (None = latest).
 
-        Returns (raw amounts are native token wei; ``*_loan`` are loan-token units):
+        Returns (raw amounts are native token wei; ``*_borrow`` are borrow-token units):
             {
-                collateral, supply_assets, borrow_assets,           # native raw ints
-                collateral_value_loan_raw, net_equity_loan_raw,     # loan-token raw ints
-                net_equity_loan, loan_token_usd, usd_value,          # floats
-                price_method,                                        # how loan_token_usd was resolved
-                loan_token, collateral_token, loan_decimals, collateral_decimals,
+                collateral, supply_assets, borrow_assets,             # native raw ints
+                collateral_value_borrow_raw, net_equity_borrow_raw,   # borrow-token raw ints
+                net_equity_borrow, borrow_token_usd, usd_value,        # floats
+                collateral_price_in_borrow, collateral_price_usd,      # oracle-implied collateral price
+                price_method,                                          # how borrow_token_usd was resolved
+                borrow_token, collateral_token, borrow_decimals, collateral_decimals,
                 oracle_price, market_id,
             }
         """
@@ -251,7 +256,8 @@ class MorphoOnchainClient:
         mid = market_id if isinstance(market_id, (bytes, bytearray)) else Web3.to_bytes(hexstr=market_id)
         user = Web3.to_checksum_address(wallet)
 
-        loan_token, collateral_token, oracle_addr, _irm, _lltv = \
+        # Morpho's MarketParams.loanToken is the asset you borrow — the "borrow token" here.
+        borrow_token, collateral_token, oracle_addr, _irm, _lltv = \
             morpho.functions.idToMarketParams(mid).call(block_identifier=block_id)
         supply_shares, borrow_shares, collateral = \
             morpho.functions.position(mid, user).call(block_identifier=block_id)
@@ -265,27 +271,33 @@ class MorphoOnchainClient:
             if borrow_shares else 0
 
         # Read the market oracle unconditionally — it prices the collateral leg AND, when the
-        # collateral is a stablecoin, anchors the loan token to USD (see _resolve_loan_usd).
+        # collateral is a stablecoin, anchors the borrow token to USD (see _resolve_borrow_usd).
         oracle = w3.eth.contract(address=Web3.to_checksum_address(oracle_addr), abi=_ORACLE_ABI)
         oracle_price = oracle.functions.price().call(block_identifier=block_id)
-        collateral_value_loan_raw = (collateral * oracle_price) // ORACLE_PRICE_SCALE
+        collateral_value_borrow_raw = (collateral * oracle_price) // ORACLE_PRICE_SCALE
 
-        net_equity_loan_raw = supply_assets + collateral_value_loan_raw - borrow_assets
+        net_equity_borrow_raw = supply_assets + collateral_value_borrow_raw - borrow_assets
 
-        loan_decimals = self._erc20_decimals(w3, loan_token)
+        borrow_decimals = self._erc20_decimals(w3, borrow_token)
         collateral_decimals = self._erc20_decimals(w3, collateral_token)
-        net_equity_loan = net_equity_loan_raw / (10 ** loan_decimals)
+        net_equity_borrow = net_equity_borrow_raw / (10 ** borrow_decimals)
 
-        loan_token_usd, price_method = self._resolve_loan_usd(
-            loan_token, collateral_token, oracle_price, loan_decimals, collateral_decimals, chain_id,
+        borrow_token_usd, price_method = self._resolve_borrow_usd(
+            borrow_token, collateral_token, oracle_price, borrow_decimals, collateral_decimals, chain_id,
         )
-        usd_value = net_equity_loan * loan_token_usd if loan_token_usd is not None else None
+        usd_value = net_equity_borrow * borrow_token_usd if borrow_token_usd is not None else None
+
+        # Oracle-implied price of the collateral asset: borrow tokens per 1 whole collateral token
+        # (oracle_price is 1e36-scaled and folds in the decimal gap), then in USD via the borrow
+        # token's price. Lets consumers report/reconcile the collateral mark without re-deriving it.
+        collateral_price_in_borrow = (oracle_price / ORACLE_PRICE_SCALE) * (10 ** collateral_decimals) / (10 ** borrow_decimals)
+        collateral_price_usd = collateral_price_in_borrow * borrow_token_usd if borrow_token_usd is not None else None
 
         logger.info(
-            "Morpho loop %s market %s: net equity %.6f loan-token x $%s (%s) = %s "
+            "Morpho loop %s market %s: net equity %.6f borrow-token x $%s (%s) = %s "
             "(collateral=%s, borrow_assets=%s)",
-            wallet, market_id, net_equity_loan,
-            f"{loan_token_usd:,.6f}" if loan_token_usd is not None else "N/A",
+            wallet, market_id, net_equity_borrow,
+            f"{borrow_token_usd:,.6f}" if borrow_token_usd is not None else "N/A",
             price_method,
             f"${usd_value:,.2f}" if usd_value is not None else "N/A",
             collateral, borrow_assets,
@@ -295,51 +307,53 @@ class MorphoOnchainClient:
             "collateral": collateral,
             "supply_assets": supply_assets,
             "borrow_assets": borrow_assets,
-            "collateral_value_loan_raw": collateral_value_loan_raw,
-            "net_equity_loan_raw": net_equity_loan_raw,
-            "net_equity_loan": net_equity_loan,
-            "loan_token_usd": loan_token_usd,
+            "collateral_value_borrow_raw": collateral_value_borrow_raw,
+            "net_equity_borrow_raw": net_equity_borrow_raw,
+            "net_equity_borrow": net_equity_borrow,
+            "borrow_token_usd": borrow_token_usd,
+            "collateral_price_in_borrow": collateral_price_in_borrow,
+            "collateral_price_usd": collateral_price_usd,
             "price_method": price_method,
             "usd_value": usd_value,
-            "loan_token": loan_token,
+            "borrow_token": borrow_token,
             "collateral_token": collateral_token,
-            "loan_decimals": loan_decimals,
+            "borrow_decimals": borrow_decimals,
             "collateral_decimals": collateral_decimals,
             "oracle_price": oracle_price,
             "market_id": market_id,
         }
 
-    def _resolve_loan_usd(
+    def _resolve_borrow_usd(
         self,
-        loan_token: str,
+        borrow_token: str,
         collateral_token: str,
         oracle_price: int,
-        loan_decimals: int,
+        borrow_decimals: int,
         collateral_decimals: int,
         chain_id: int,
     ):
-        """USD price of the loan token, anchored on-chain to the market's stablecoin leg.
+        """USD price of the borrow token, anchored on-chain to the market's stablecoin leg.
 
-          1. loan token is a USD stablecoin   → $1
+          1. borrow token is a USD stablecoin  → $1
           2. collateral is a USD stablecoin    → invert the market oracle (fully on-chain)
           3. neither leg is a stablecoin       → unpriced (None); can't anchor to USD on-chain
 
-        Returns ``(price, method)``. Case 2: the oracle (collateral→loan, 1e36-scaled) pins the
-        loan's USD price — 1 collateral = $1 = price·10^(collDec−loanDec)/1e36 loan tokens, so
-        1 loan token = 1e36·10^(loanDec−collDec)/price USD.
+        Returns ``(price, method)``. Case 2: the oracle (collateral→borrow, 1e36-scaled) pins the
+        borrow token's USD price — 1 collateral = $1 = price·10^(collDec−borrowDec)/1e36 borrow
+        tokens, so 1 borrow token = 1e36·10^(borrowDec−collDec)/price USD.
         """
         stables = _STABLECOINS.get(chain_id, set())
 
-        if loan_token.lower() in stables:
+        if borrow_token.lower() in stables:
             return 1.0, "stablecoin"
 
         if collateral_token.lower() in stables and oracle_price:
-            loan_usd = (ORACLE_PRICE_SCALE / oracle_price) * (10 ** loan_decimals) / (10 ** collateral_decimals)
-            return loan_usd, "oracle_inverse"
+            borrow_usd = (ORACLE_PRICE_SCALE / oracle_price) * (10 ** borrow_decimals) / (10 ** collateral_decimals)
+            return borrow_usd, "oracle_inverse"
 
         logger.warning(
-            "Morpho loop market has no stablecoin leg (loan %s / collateral %s on chain %s); "
+            "Morpho loop market has no stablecoin leg (borrow %s / collateral %s on chain %s); "
             "cannot anchor USD on-chain — returning unpriced",
-            loan_token, collateral_token, chain_id,
+            borrow_token, collateral_token, chain_id,
         )
         return None, "unpriced"
