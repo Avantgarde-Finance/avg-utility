@@ -16,10 +16,12 @@ class PriceSource(IntEnum):
     PENDLE = 3
     MORPHO_V2 = 4
     ONYX = 5
+    SYMBIOTIC = 7  # generic ERC-4626 vault priced on-chain (convertToAssets); no first-party price API
 
     @property
     def label(self) -> str:
-        return {1: "CoinGecko", 2: "Morpho V1", 3: "Pendle", 4: "Morpho V2", 5: "Onyx"}[self.value]
+        return {1: "CoinGecko", 2: "Morpho V1", 3: "Pendle", 4: "Morpho V2", 5: "Onyx",
+                7: "Symbiotic"}[self.value]
 
 
 class YieldSource(IntEnum):

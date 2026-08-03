@@ -44,6 +44,7 @@ class PricingService:
         3 = Pendle
         4 = Morpho V2
         5 = Onyx (on-chain sharePrice)
+        7 = Symbiotic (generic ERC-4626 vault, on-chain convertToAssets)
     """
 
     def __init__(self, rpc_urls: Dict[int, str] = None):
@@ -90,6 +91,15 @@ class PricingService:
                 rpc_url = self.rpc_urls.get(chain_id)
                 if rpc_url:
                     result = self.onyx.get_price_at_block(token_address, rpc_url)
+                    if result is not None:
+                        price = result[0]
+            elif price_source == PriceSource.SYMBIOTIC:
+                # Generic ERC-4626 vault: read the latest share price on-chain (no first-party API).
+                rpc_url = self.rpc_urls.get(chain_id)
+                if rpc_url:
+                    result = self.morpho_onchain.get_share_price_usd_at_block(
+                        vault_address=token_address, rpc_url=rpc_url, chain_id=chain_id,
+                    )
                     if result is not None:
                         price = result[0]
             else:
@@ -233,10 +243,10 @@ class PricingService:
 
         Args:
             price_source: Source ID. Supported: 2=Morpho V1, 4=Morpho V2,
-                5=Onyx — all read on-chain (ERC-4626 / sharePrice) instead of
-                via an API. Morpho sources resolve the underlying -> USD half
-                by treating known stablecoins as $1 and pricing everything else
-                from CoinGecko at the block timestamp.
+                5=Onyx, 7=Symbiotic — all read on-chain (ERC-4626 / sharePrice)
+                instead of via an API. ERC-4626 sources (2/4/7) resolve the
+                underlying -> USD half by treating known stablecoins as $1 and
+                pricing everything else from CoinGecko at the block timestamp.
             token_address: Token/vault address.
             chain_id: Chain ID.
             block_number: Block number to query at.
@@ -251,7 +261,7 @@ class PricingService:
 
         if price_source == PriceSource.ONYX:
             return self.onyx.get_price_at_block(token_address, rpc_url, block_number)
-        elif price_source in (PriceSource.MORPHO_V1, PriceSource.MORPHO_V2):
+        elif price_source in (PriceSource.MORPHO_V1, PriceSource.MORPHO_V2, PriceSource.SYMBIOTIC):
             return self.morpho_onchain.get_share_price_usd_at_block(
                 vault_address=token_address,
                 rpc_url=rpc_url,
