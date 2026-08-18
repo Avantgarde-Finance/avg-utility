@@ -50,6 +50,7 @@ _STABLECOINS = {
         "0xdac17f958d2ee523a2206206994597c13d831ec7",  # USDT
         "0x6b175474e89094c44da98b954eedeac495271d0f",  # DAI
         "0xdc035d45d973e3ec169d2276ddab16f1e407384f",  # USDS
+        "0x6c3ea9036406852006290770bedfcaba0e23a0e8",  # PYUSD
     },
     42161: {
         "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # USDC (native)
