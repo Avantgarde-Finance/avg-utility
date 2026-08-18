@@ -38,10 +38,12 @@ class YieldSource(IntEnum):
 class PositionSource(IntEnum):
     GRAPH_HORIZON_DELEGATION = 1
     MORPHO_LOOP = 2
+    MIDAS_REDEMPTION_QUEUE = 3  # mTokens escrowed in a Midas redemption vault, awaiting approval
 
     @property
     def label(self) -> str:
-        return {1: "Graph Horizon Delegation", 2: "Morpho Loop"}[self.value]
+        return {1: "Graph Horizon Delegation", 2: "Morpho Loop",
+                3: "Midas Redemption Queue"}[self.value]
 
 
 def label_for(enum_cls, value) -> str:

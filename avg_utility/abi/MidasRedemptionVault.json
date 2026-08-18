@@ -1,0 +1,37 @@
+[
+  {
+    "name": "currentRequestId",
+    "type": "function",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{"type": "uint256"}]
+  },
+  {
+    "name": "redeemRequests",
+    "type": "function",
+    "stateMutability": "view",
+    "inputs": [{"name": "requestId", "type": "uint256"}],
+    "outputs": [
+      {"name": "sender", "type": "address"},
+      {"name": "tokenOut", "type": "address"},
+      {"name": "status", "type": "uint8"},
+      {"name": "amountMToken", "type": "uint256"},
+      {"name": "mTokenRate", "type": "uint256"},
+      {"name": "tokenOutRate", "type": "uint256"}
+    ]
+  },
+  {
+    "name": "mToken",
+    "type": "function",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{"type": "address"}]
+  },
+  {
+    "name": "mTokenDataFeed",
+    "type": "function",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{"type": "address"}]
+  }
+]

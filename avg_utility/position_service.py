@@ -6,6 +6,7 @@ positions that are NOT a plain ERC20 `balanceOf` (e.g. native Graph delegation, 
 position_source mapping (see avg_utility.enum.sources.PositionSource):
     1 = Graph Horizon Delegation  (Arbitrum One; wallet + delegated + thawing, in GRT)
     2 = Morpho Loop               (leveraged Morpho Blue market; net-equity USD)
+    3 = Midas Redemption Queue    (mTokens escrowed in a Midas redemption vault, in mToken)
 """
 import logging
 from typing import Any, Dict, List, Optional
@@ -13,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from avg_utility.client.horizon_client import HorizonClient
+from avg_utility.client.midas_client import MidasRedemptionClient
 from avg_utility.client.morpho_onchain_client import MorphoOnchainClient
 from avg_utility.client.thegraph_client import TheGraphClient
 from avg_utility.enum.sources import PositionSource, label_for
@@ -38,6 +40,7 @@ class PositionService:
         self._horizon: Optional[HorizonClient] = None
         self._thegraph: Optional[TheGraphClient] = None
         self._morpho_loop: Optional[MorphoOnchainClient] = None
+        self._midas: Optional[MidasRedemptionClient] = None
 
     # ---- lazy clients ----
 
@@ -56,6 +59,11 @@ class PositionService:
             self._morpho_loop = MorphoOnchainClient()
         return self._morpho_loop
 
+    def _midas_client(self) -> MidasRedemptionClient:
+        if self._midas is None:
+            self._midas = MidasRedemptionClient()
+        return self._midas
+
     # ---- dispatch ----
 
     def get_position(self, position_source: int, wallet: str, block: Optional[int] = None, **kwargs) -> Dict[str, Any]:
@@ -64,6 +72,8 @@ class PositionService:
             return self.get_grt_position(wallet, block=block, **kwargs)
         if position_source == PositionSource.MORPHO_LOOP:
             return self.get_morpho_loop_position(wallet, block=block, **kwargs)
+        if position_source == PositionSource.MIDAS_REDEMPTION_QUEUE:
+            return self.get_midas_redemption_position([wallet], block=block, **kwargs)
         raise ValueError(f"Unknown position_source {position_source} ({label_for(PositionSource, position_source)})")
 
     # ---- readers ----
@@ -154,4 +164,54 @@ class PositionService:
             chain_id=chain_id,
             morpho_address=morpho_address,
             block=block,
+        )
+
+    def get_midas_redemption_position(
+        self,
+        wallets: List[str],
+        block: Optional[int] = None,
+        redemption_vaults: Optional[List[str]] = None,
+        mtoken: Optional[str] = None,
+        chain_id: int = 1,
+    ) -> Dict[str, Any]:
+        """mTokens escrowed in Midas redemption vault(s) awaiting operator approval.
+
+        Single-asset position, denominated in the mToken: `redeemRequest` moves the tokens out of
+        the wallet into the vault where they sit unburned, so they are invisible to `balanceOf` but
+        are still ours. Returns a native quantity for the caller to price with the mToken's normal
+        price source — the same shape as `get_grt_position`, and deliberately the same price the
+        wallet's liquid mToken balance uses.
+
+        Takes a wallet LIST (not one wallet like the other readers) because the vault is scanned
+        once per block and every holder filtered out of that single pass; per-wallet calls would
+        re-read the whole request book each time.
+
+        Args:
+            wallets: addresses whose claims to count, matched against the request's payee.
+            block: block to pin all reads to (None = latest).
+            redemption_vaults: Midas redemption vaults for this mToken. Required — a list, because
+                one mToken can have several and Midas's published registry has been incomplete.
+            mtoken: expected mToken address; when given, each vault's `mToken()` must match.
+            chain_id: chain the vaults live on.
+
+        Returns (quantities as integer wei, 18 dec — mTokens are always 18):
+            {
+                pending_raw, pending, pending_count,      # pending_raw is the position quantity
+                requests: [{vault, request_id, recipient, amount_mtoken, ...}, ...],
+                per_vault: [{vault, current_request_id, pending, escrow, ...}, ...],
+                nav_feed: {feed, nav_usd, age_s, stale, error},   # health only, never the price
+                mtoken,
+            }
+        """
+        if not redemption_vaults:
+            raise ValueError("get_midas_redemption_position requires redemption_vaults")
+        rpc_url = self.rpc_urls.get(chain_id)
+        if not rpc_url:
+            raise ValueError(f"No RPC url configured for chain {chain_id}")
+        return self._midas_client().get_redemption_position(
+            holders=wallets,
+            redemption_vaults=redemption_vaults,
+            rpc_url=rpc_url,
+            block=block,
+            mtoken=mtoken,
         )
