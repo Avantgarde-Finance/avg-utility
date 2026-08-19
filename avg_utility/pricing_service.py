@@ -1,7 +1,7 @@
 """Pricing service — single entry point for all price operations."""
 import os
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -14,6 +14,11 @@ from avg_utility.enum.sources import PriceSource, label_for
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+# Sources with NO historical range API: their price exists only on-chain, at a block. They are
+# served by get_price_by_block / get_prices_at_blocks, never by get_historical_prices.
+ON_CHAIN_ONLY_PRICE_SOURCES = frozenset({PriceSource.ONYX, PriceSource.SYMBIOTIC})
 
 
 def _check_env():
@@ -228,6 +233,17 @@ class PricingService:
             entries = vault.get("historicalState", {}).get("sharePrice", [])
             return [(e["x"], float(e["y"])) for e in entries]
 
+        elif price_source in ON_CHAIN_ONLY_PRICE_SOURCES:
+            # Raising, not returning [], on purpose. An empty list is indistinguishable from
+            # "no data in that range", so callers wrote nothing and looked healthy — sources 5
+            # and 7 silently produced ZERO price rows for months that way. These have no range
+            # API at all; the caller must supply blocks and use get_prices_at_blocks.
+            raise NotImplementedError(
+                f"price_source {price_source} ({label_for(PriceSource, price_source)}) is read "
+                f"on-chain and has no historical range API — use get_prices_at_blocks() with a "
+                f"block per timestamp"
+            )
+
         else:
             logger.warning(f"No historical price support for price_source {price_source}")
             return []
@@ -271,6 +287,65 @@ class PricingService:
         else:
             logger.warning(f"get_price_by_block not supported for price_source {price_source}")
             return None
+
+    def get_prices_at_blocks(
+        self,
+        price_source: int,
+        token_address: str,
+        chain_id: int,
+        blocks: Iterable[Tuple[Any, int]],
+        skip_errors: bool = True,
+    ) -> List[Tuple[Any, float]]:
+        """Prices for one token at many blocks — the historical path for on-chain-only sources.
+
+        The caller supplies the blocks because resolving a timestamp to a block needs either a DB
+        (consumers have `blocknumbers.<chain>_daily`) or a block-by-timestamp API, and this package
+        never touches a database. Pass whatever key you want back: a date, a timestamp, an index.
+
+        NOT batched through Multicall3, deliberately: a multicall executes against a SINGLE block
+        state, so it cannot span blocks — which is the whole point here. Batching could only group
+        several *tokens* at one block, and this reads one token across many blocks, so there is
+        nothing to group.
+
+        Args:
+            price_source: on-chain source (2, 4, 5, 7).
+            token_address: token/vault address.
+            chain_id: chain the token lives on.
+            blocks: iterable of (key, block_number).
+            skip_errors: skip a block that cannot be read (default). False re-raises — use it when
+                a gap matters more than a partial result.
+
+        Returns:
+            [(key, price)] for the blocks that could be read, in input order. A block that returns
+            nothing is OMITTED rather than yielding 0.0 — a zero share price reads as a wiped-out
+            vault.
+        """
+        out: List[Tuple[Any, float]] = []
+        for key, block_number in blocks:
+            try:
+                result = self.get_price_by_block(
+                    price_source=price_source,
+                    token_address=token_address,
+                    chain_id=chain_id,
+                    block_number=block_number,
+                )
+            except Exception as e:
+                if not skip_errors:
+                    raise
+                logger.warning(
+                    "price at block %s for %s failed: %s", block_number, token_address, e
+                )
+                continue
+            if result is None:
+                if not skip_errors:
+                    raise ValueError(
+                        f"no price for {token_address} at block {block_number} "
+                        f"(source {price_source})"
+                    )
+                continue
+            price = result[0] if isinstance(result, tuple) else result
+            out.append((key, float(price)))
+        return out
 
     def clear_cache(self):
         """Clear the in-memory price cache."""
