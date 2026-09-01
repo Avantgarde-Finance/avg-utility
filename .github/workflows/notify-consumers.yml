@@ -1,0 +1,116 @@
+# .github/workflows/notify-consumers.yml
+# Lives in: Avantgarde-Finance/avg-utility
+#
+# On merge to main: sanity-check the package, then tell each consumer repo to
+# rebuild and redeploy against this exact commit.
+#
+# Requires repo secret CONSUMER_DISPATCH_TOKEN — a fine-grained PAT with
+# Contents: read+write on the CONSUMER repos (not on this one).
+
+name: Notify consumers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Dispatch to a single repo (blank = all)"
+        required: false
+        type: string
+
+# One fan-out at a time. Two merges minutes apart would otherwise race each
+# other through the consumers' staging and prod deploys.
+concurrency:
+  group: notify-consumers
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Sanity check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # There is no test suite in this repo yet, so this is the ONLY automated
+      # gate between a merge here and a production Lambda downstream. It catches
+      # syntax errors, broken imports, bad packaging metadata, and unresolvable
+      # dependencies — the failures that would otherwise surface as a crashed
+      # Lambda after the fan-out has already deployed.
+      #
+      # When you add tests, put `pytest -q` below and delete this comment.
+      - name: Install the package as a consumer would
+        run: |
+          pip install --upgrade pip
+          pip install .
+
+      - name: Import every module
+        run: |
+          python - <<'PY'
+          import importlib, pkgutil, sys
+          import avg_utility
+
+          failed = []
+          for mod in pkgutil.walk_packages(avg_utility.__path__, "avg_utility."):
+              try:
+                  importlib.import_module(mod.name)
+              except Exception as exc:
+                  failed.append(f"{mod.name}: {exc.__class__.__name__}: {exc}")
+
+          if failed:
+              print("FAILED IMPORTS:")
+              for line in failed:
+                  print(" ", line)
+              sys.exit(1)
+
+          print(f"all modules imported cleanly (version {importlib.metadata.version('avg-utility')})")
+          PY
+
+  dispatch:
+    name: Dispatch
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ONE LINE PER CONSUMER REPO. Each entry becomes its own parallel job
+        # that fires a repository_dispatch at that repo. Add a repo here only
+        # after its own deploy workflow has been tested with a hand-fired
+        # dispatch — see the README note.
+        repo:
+          - avg-onyx-valuation-bot
+          # - avg-onyx-tools-app          # blocked: Streamlit Community Cloud
+          # - avg-depositor-analytics
+          # - avg-revenue-tracker
+
+    steps:
+      - name: Skip if a single target was requested
+        id: gate
+        run: |
+          ONLY="${{ inputs.only }}"
+          if [[ -n "${ONLY}" && "${ONLY}" != "${{ matrix.repo }}" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger ${{ matrix.repo }}
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.CONSUMER_DISPATCH_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository_owner }}/${{ matrix.repo }}/dispatches" \
+            -f "event_type=avg-utility-updated" \
+            -f "client_payload[sha]=${{ github.sha }}" \
+            -f "client_payload[message]=${{ github.event.head_commit.message || 'manual dispatch' }}" \
+            -f "client_payload[actor]=${{ github.actor }}"
+
+      - name: Summary
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          echo "Dispatched \`${GITHUB_SHA:0:7}\` to **${{ matrix.repo }}**" >> "$GITHUB_STEP_SUMMARY"
