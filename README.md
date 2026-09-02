@@ -185,3 +185,62 @@ Negative APY values are automatically forward-filled with the previous day's val
 | `token_address` | For sources 2-4 | Token/vault contract address |
 | `chain_id` | For sources 2-4 | Chain ID |
 | `dlid` | For source 1 | DefiLlama pool ID |
+
+
+# Automation/ FanOut Architecture
+
+<img width="1000" height="1030" alt="image" src="https://github.com/user-attachments/assets/819a53d0-5267-4b36-ae04-55e657334b0a" />
+
+<img width="1000" height="442" alt="image" src="https://github.com/user-attachments/assets/2d0d06cd-4ace-44cd-a022-759527e98b04" />
+
+
+# Adding a downstream consumer
+1. Grant the read token access. Edit the existing fine-grained PAT (avg-utility read) — no new token needed. Then widen the org secret:
+
+bash
+```gh secret set AVG_UTILITY_TOKEN --org Avantgarde-Finance --app actions \
+  --visibility selected \
+  --repos "avg-onyx-valuation-bot,<new-repo>"
+```
+
+The --repos list is a full replacement, so include every existing consumer.
+
+2. Grant the dispatch token write access. Edit avg-utility consumer dispatch and add the new repo under "Repository access". Contents: read and write.
+3. Wire the dependency. In requirements.txt:
+
+```
+avg-utility @ git+https://github.com/Avantgarde-Finance/avg-utility.git@main
+```
+
+Or for a uv project, [tool.uv.sources] with branch = "main", and uv lock --upgrade-package avg-utility in CI.
+
+4. Wire the build. In the consumer's Dockerfile:
+
+```# syntax=docker/dockerfile:1.7 on line 1```
+ARG AVG_UTILITY_REF=main before the install
+RUN --mount=type=secret,id=gh_token with the insteadOf rewrite
+--upgrade --force-reinstall --no-deps on the pin (the --upgrade is mandatory with -t)
+Write AVG_UTILITY_REF and AVG_UTILITY_VERSION breadcrumbs
+
+5. Wire the workflow. Add repository_dispatch: types: [avg-utility-updated], a step resolving github.event.client_payload.sha, docker/setup-buildx-action@v3, and the verify gate comparing the built ref against the requested one.
+
+6. Test before registering. Fire a dispatch by hand and watch it run end to end:
+
+bash
+gh api repos/Avantgarde-Finance/<new-repo>/dispatches \
+  -f "event_type=avg-utility-updated" \
+  -f "client_payload[sha]=$(gh api repos/Avantgarde-Finance/avg-utility/commits/main --jq .sha)"
+
+Only when that's green, add the repo to the matrix in notify-consumers.yml.
+
+#### Three things that decide how much work a new consumer is
+
+Does something else build the image? The valuation bot's Serverless config uses uri:, so GitHub Actions builds directly and you get BuildKit secret mounts. If a consumer uses path: instead, Serverless builds it and you're stuck passing the token as a build arg — which forces a multi-stage Dockerfile to keep it out of the pushed layers.
+
+Is there a staging environment? The bot has one, so the fan-out gets a gate. A consumer with only prod goes straight there. Worth adding required reviewers on that repo's prod environment if so.
+
+Is it long-running? Lambdas pick up the new image at their next invocation. A Fargate service needs aws ecs update-service --force-new-deployment and a services-stable wait.
+
+The Streamlit tools app fails all three plus can't install from a private repo at all — that one needs migrating off Community Cloud before it can join.
+
+
