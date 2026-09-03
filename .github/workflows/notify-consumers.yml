@@ -12,6 +12,17 @@ name: Notify consumers
 on:
   push:
     branches: [main]
+    # A docs-only change should not redeploy production Lambdas. Without this,
+    # editing the README fans out through staging and into prod on every
+    # consumer — noise, plus a small risk for zero benefit.
+    #
+    # .github/** is excluded too: editing THIS workflow should not trigger it.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.github/**'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       only:
@@ -52,7 +63,7 @@ jobs:
       - name: Import every module
         run: |
           python - <<'PY'
-          import importlib, pkgutil, sys
+          import importlib, importlib.metadata, pkgutil, sys
           import avg_utility
 
           failed = []
@@ -81,12 +92,10 @@ jobs:
         # ONE LINE PER CONSUMER REPO. Each entry becomes its own parallel job
         # that fires a repository_dispatch at that repo. Add a repo here only
         # after its own deploy workflow has been tested with a hand-fired
-        # dispatch — see the README note.
+        # dispatch.
         repo:
           - avg-onyx-valuation-bot
           # - avg-onyx-tools-app          # blocked: Streamlit Community Cloud
-          # - avg-depositor-analytics
-          # - avg-revenue-tracker
 
     steps:
       - name: Skip if a single target was requested
