@@ -95,6 +95,9 @@ jobs:
         # dispatch.
         repo:
           - avg-onyx-valuation-bot
+          # Uncomment ONLY after a hand-fired dispatch to this repo has run
+          # build -> prod cleanly. See the test sequence in the rollout notes.
+          - avg-yield-scheduler
           # - avg-onyx-tools-app          # blocked: Streamlit Community Cloud
 
     steps:
